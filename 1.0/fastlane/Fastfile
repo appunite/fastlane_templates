@@ -1,0 +1,96 @@
+fastlane_version "1.17.1"
+
+default_platform :ios
+
+platform :ios do
+
+  desc "create and upload ipa to crashlytics"
+  lane :production do
+
+    au_add_identity
+
+    #prepare cocoapods
+    cocoapods
+    
+    `export SSL_CERT_FILE=/etc/openssl/ca-cert.pem`
+
+    #download provisioning profile
+    sigh
+    
+    # setup provisioning profile
+    ENV["PROFILE_UDID"] = Actions.lane_context[Actions::SharedValues::SIGH_UDID]
+    
+    # increase build number
+    build_no = ENV["CI_BUILD_ID"].to_i
+    increment_build_number build_number: build_no
+    build_no = build_no.to_s.delete!("\n")
+        
+    #build app
+    gym scheme: ENV["XCODE_SCHEME"], clean: true, configuration: "Distribution", use_legacy_build_api: true
+
+    #upload artifact
+    au_artifacts_upload
+
+    #generate short url
+    bitly_url = au_download_link
+  
+    #upload to crashlytics
+    crashlytics({groups: 'internal-tests'})
+    
+    #prepare git hash
+    git_hash = `git rev-parse --short=8 HEAD`
+    
+    #send to build tracker
+    # au_build_tracker build_number: build_no, build_name: git_hash, download_url: bitly_url.to_s, app_id: "108"
+    
+    #send slack message
+    slack(
+      message: "New PicFlic version available (#{ENV['CI_BUILD_ID']}).",
+      attachment_properties: {
+        fields: [{
+          title: 'git-hash',
+          value: git_hash,
+          short: true
+          }, {
+            title: 'storage',
+            value: bitly_url,
+            short: true
+            }]
+          }
+    )
+    
+  end
+  
+  desc "Runs all the tests"
+  lane :testflight do
+
+    au_provision_download
+
+    au_add_identity gs_certificate_path: ENV["GS_TF_CERTIFICATE_PATH"], certificate_password: ENV["TF_CERT_PASSWORD"]
+
+    au_artifacts_download
+
+    resign
+
+    ENV["FASTLANE_PASSWORD"] = ENV["TESTFLIGHT_DELIVER_PASSWORD"]
+
+    pilot(skip_submission: true, wait_processing_interval: 1, app_identifier: "com.flipsidegroup.PicFlic")
+
+    git_hash = `git rev-parse --short=8 HEAD`
+
+    # au_build_tracker build_name: git_hash, app_id: "108", status: 'ready_to_test'
+    
+    slack(
+      message: "New version of PicFlic available on TestFlight", 
+      attachment_properties: {
+        fields: [{
+          title: 'git-hash',
+          value: git_hash,
+          short: true
+        }]
+      }
+    )
+
+  end
+
+end
